@@ -1,0 +1,5 @@
+{
+  "name": "SliceMaster AI - PSD Slicer",
+  "description": "A professional-grade PSD slicing tool that automatically trims transparent areas, preserves folder hierarchies, and exports optimized PNG assets.",
+  "requestFramePermissions": []
+}
