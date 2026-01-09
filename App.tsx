@@ -21,16 +21,14 @@ const App: React.FC = () => {
   const layerMapRef = useRef<Map<string, any>>(new Map());
   const [layers, setLayers] = useState<PsdLayer[]>([]);
   const [previewLayer, setPreviewLayer] = useState<{id: string, name: string, canvas: HTMLCanvasElement, w: number, h: number} | null>(null);
+  
   const [state, setState] = useState<ProcessingState>({
     status: 'idle',
     progress: 0,
     message: '本地引擎就绪'
   });
   
-  // 统计信息
   const [stats, setStats] = useState({ total: 0, selected: 0, groups: 0 });
-
-  // 设置
   const [namingStyle, setNamingStyle] = useState<NamingStyle>('snake_case');
   const [useFolderPrefix, setUseFolderPrefix] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -60,19 +58,20 @@ const App: React.FC = () => {
 
   const loadPsd = async (file: File) => {
     reset();
-    // 1. 初始化
-    setState({ status: 'parsing', progress: 5, message: `正在读取文件: ${file.name}` });
-    await new Promise(r => setTimeout(r, 100)); // 确保 UI 渲染
+    setState({ status: 'parsing', progress: 5, message: `正在准备读取: ${file.name}` });
+
+    // 确保 UI 渲染出加载状态
+    await new Promise(r => setTimeout(r, 150));
 
     try {
-      // 2. 加载 ArrayBuffer
+      setState({ status: 'parsing', progress: 20, message: '读取本地文件流...' });
       const buffer = await file.arrayBuffer();
-      setState({ status: 'parsing', progress: 25, message: '正在解析 PSD 数据结构...' });
-      await new Promise(r => setTimeout(r, 50));
+      
+      setState({ status: 'parsing', progress: 45, message: '解析 PSD 结构 (大型文件可能需要几秒)...' });
+      await new Promise(r => setTimeout(r, 100));
 
-      // 3. 解析 PSD (这是耗时同步操作，放在微任务里执行)
       const psd = await new Promise<any>((resolve, reject) => {
-        setTimeout(() => {
+        const timeout = setTimeout(() => {
           try {
             const data = readPsd(buffer, { skipThumbnail: true });
             resolve(data);
@@ -83,10 +82,8 @@ const App: React.FC = () => {
       });
 
       psdRef.current = psd;
-      setState({ status: 'parsing', progress: 60, message: '正在递归构建图层树...' });
-      await new Promise(r => setTimeout(r, 50));
+      setState({ status: 'parsing', progress: 80, message: '构建可视化图层树...' });
 
-      // 4. 构建树
       const transformLayers = (psdLayers: any[]): PsdLayer[] => {
         return psdLayers.map((l) => {
           const id = `layer-${Math.random().toString(36).substr(2, 9)}`;
@@ -110,70 +107,71 @@ const App: React.FC = () => {
       const root = transformLayers(psd.children || []);
       setLayers(root);
       
-      // 5. 完成
-      setState({ status: 'parsing', progress: 100, message: '解析完成' });
-      await new Promise(r => setTimeout(r, 300)); // 让用户看到 100%
-      setState({ status: 'ready', progress: 100, message: '就绪' });
-
+      setState({ status: 'parsing', progress: 100, message: '加载成功' });
+      await new Promise(r => setTimeout(r, 400));
+      setState({ status: 'ready', progress: 100, message: '本地引擎已就绪' });
     } catch (err: any) {
-      console.error(err);
-      setState({ status: 'idle', progress: 0, message: "解析失败: 格式不支持或内存不足" });
+      console.error("[LoaderError]", err);
+      setState({ status: 'idle', progress: 0, message: "解析失败: 可能是内存不足或文件格式不支持" });
+      alert("解析 PSD 失败，请确保文件未损坏且内存充足。");
     }
   };
 
   const exportAssets = async () => {
     if (layers.length === 0) return;
-    setState({ status: 'exporting', progress: 0, message: '正在初始化本地导出队列...' });
+    setState({ status: 'exporting', progress: 0, message: '初始化导出工作区...' });
     
-    const zip = new JSZip();
-    let totalLayers = stats.selected;
-    let processedCount = 0;
+    try {
+      const zip = new JSZip();
+      let totalLayers = stats.selected;
+      let processedCount = 0;
 
-    if (totalLayers === 0) {
-      alert("请至少选择一个图层");
-      setState({ status: 'ready', progress: 100, message: '未选择图层' });
-      return;
-    }
+      if (totalLayers === 0) {
+        alert("请在左侧勾选需要导出的图层");
+        setState({ status: 'ready', progress: 100, message: '未选中导出项' });
+        return;
+      }
 
-    const processLevel = async (list: PsdLayer[], currentZip: JSZip, prefixPath: string = "") => {
-      for (const l of list) {
-        const cleanName = transformName(l.name, namingStyle);
-        if (l.type === 'group') {
-          const folder = currentZip.folder(cleanName);
-          if (l.children && folder) {
-            await processLevel(l.children, folder, useFolderPrefix ? `${prefixPath}${cleanName}_` : "");
-          }
-        } else if (l.type === 'layer' && l.isSelected) {
-          const raw = layerMapRef.current.get(l.id);
-          if (raw) {
-            processedCount++;
-            setState({ 
-              status: 'exporting', 
-              progress: (processedCount / totalLayers) * 100, 
-              message: `正在裁剪透明像素: ${l.name} (${processedCount}/${totalLayers})` 
-            });
-            try {
+      const processLevel = async (list: PsdLayer[], currentZip: JSZip, prefixPath: string = "") => {
+        for (const l of list) {
+          const cleanName = transformName(l.name, namingStyle);
+          if (l.type === 'group') {
+            const folder = currentZip.folder(cleanName);
+            if (l.children && folder) {
+              await processLevel(l.children, folder, useFolderPrefix ? `${prefixPath}${cleanName}_` : "");
+            }
+          } else if (l.type === 'layer' && l.isSelected) {
+            const raw = layerMapRef.current.get(l.id);
+            if (raw) {
+              processedCount++;
+              setState({ 
+                status: 'exporting', 
+                progress: (processedCount / totalLayers) * 100, 
+                message: `正在切图: ${l.name} (${processedCount}/${totalLayers})` 
+              });
               const trimmed = trimCanvas(raw);
               if (trimmed) {
                 const blob = await new Promise<Blob | null>(res => trimmed.canvas.toBlob(res, 'image/png'));
                 if (blob) zip.file(`${prefixPath}${cleanName}.png`, blob);
               }
-            } catch (e) {}
-            // 每处理几个图层释放一次主线程，保持 UI 响应
-            if (processedCount % 4 === 0) await new Promise(r => setTimeout(r, 16));
+              if (processedCount % 5 === 0) await new Promise(r => setTimeout(r, 10));
+            }
           }
         }
-      }
-    };
+      };
 
-    await processLevel(layers, zip);
-    setState({ status: 'exporting', progress: 99, message: '正在封装 ZIP 压缩包...' });
-    const content = await zip.generateAsync({ type: 'blob' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(content);
-    link.download = `Slices_${Date.now()}.zip`;
-    link.click();
-    setState({ status: 'ready', progress: 100, message: '导出成功' });
+      await processLevel(layers, zip);
+      setState({ status: 'exporting', progress: 99, message: '打包 ZIP 中...' });
+      const content = await zip.generateAsync({ type: 'blob' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(content);
+      link.download = `Slices_${Date.now()}.zip`;
+      link.click();
+      setState({ status: 'ready', progress: 100, message: '导出完成' });
+    } catch (e) {
+      console.error("[ExportError]", e);
+      setState({ status: 'ready', progress: 100, message: '导出中断' });
+    }
   };
 
   const handlePreview = useCallback((layer: PsdLayer) => {
@@ -209,45 +207,44 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#030303] text-zinc-100 font-sans selection:bg-indigo-500/30">
+    <div className="flex flex-col h-screen overflow-hidden bg-[#030303] text-zinc-100 font-sans">
       
-      {/* 强化版加载/导出状态遮罩 */}
+      {/* 全屏加载状态遮罩 */}
       {(state.status === 'parsing' || state.status === 'exporting') && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-3xl z-[2000] flex flex-col items-center justify-center p-12 text-center transition-all">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-3xl z-[2000] flex flex-col items-center justify-center p-12 text-center animate-in fade-in duration-500">
            <div className="relative mb-10">
-              <div className="w-28 h-28 border-[6px] border-white/5 border-t-indigo-500 rounded-full animate-spin transition-all duration-300" />
-              <div className="absolute inset-0 flex items-center justify-center text-sm font-black tabular-nums tracking-tighter">
+              <div className="w-24 h-24 border-[4px] border-white/5 border-t-indigo-500 rounded-full animate-spin shadow-2xl shadow-indigo-600/20" />
+              <div className="absolute inset-0 flex items-center justify-center text-xs font-black tabular-nums tracking-tighter text-indigo-400">
                 {Math.round(state.progress)}%
               </div>
            </div>
-           <div className="space-y-3 max-w-sm">
-             <h3 className="text-xl font-black italic uppercase tracking-tighter text-white">
-               {state.status === 'parsing' ? '正在处理本地 PSD' : '资源导出打包中'}
+           <div className="space-y-4 max-w-sm">
+             <h3 className="text-2xl font-black italic uppercase tracking-tighter text-white">
+               {state.status === 'parsing' ? '解析 PSD 中' : '正在切图导出'}
              </h3>
-             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.3em] leading-relaxed transition-all">
+             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.4em] leading-relaxed">
                {state.message}
              </p>
            </div>
-           <div className="mt-16 w-full max-w-[280px] h-1 bg-white/5 rounded-full overflow-hidden shadow-inner">
+           <div className="mt-16 w-full max-w-[240px] h-1 bg-white/5 rounded-full overflow-hidden">
              <div 
-               className="h-full bg-gradient-to-r from-indigo-600 to-indigo-400 transition-all duration-500 cubic-bezier(0.4, 0, 0.2, 1)" 
+               className="h-full bg-indigo-500 transition-all duration-500 ease-out" 
                style={{ width: `${state.progress}%` }} 
              />
            </div>
         </div>
       )}
 
-      <header className="h-20 border-b border-white/5 bg-[#080808]/90 backdrop-blur-2xl flex items-center justify-between px-10 shrink-0 z-[120]">
+      <header className="h-20 border-b border-white/5 bg-[#080808]/80 backdrop-blur-xl flex items-center justify-between px-10 shrink-0 z-[120]">
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-2xl shadow-indigo-500/20">
+          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20">
             <Zap size={20} fill="currentColor" />
           </div>
           <div>
-            <h1 className="text-lg font-black tracking-tighter italic uppercase leading-none">SliceMaster <span className="text-indigo-500">Core</span></h1>
-            <div className="flex items-center gap-2 mt-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <p className="text-[8px] font-black uppercase tracking-widest text-zinc-600">离线隐私引擎已就绪</p>
-            </div>
+            <h1 className="text-lg font-black tracking-tighter italic uppercase leading-none">SliceMaster <span className="text-indigo-500">Pro</span></h1>
+            <p className="text-[8px] font-black uppercase tracking-widest text-zinc-600 mt-1.5 flex items-center gap-2">
+              <span className="w-1 h-1 bg-emerald-500 rounded-full" /> 100% 本地隐私安全模式
+            </p>
           </div>
         </div>
 
@@ -256,14 +253,14 @@ const App: React.FC = () => {
             <button 
               onClick={exportAssets} 
               disabled={state.status === 'exporting'} 
-              className="bg-white text-black px-8 py-2.5 rounded-xl font-black text-[10px] flex items-center gap-2 hover:bg-indigo-50 active:scale-95 transition-all disabled:opacity-50 uppercase tracking-widest shadow-xl"
+              className="bg-white text-black px-8 py-2.5 rounded-xl font-black text-[10px] flex items-center gap-2 hover:bg-zinc-200 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shadow-lg"
             >
-               <Download size={14} /> 批量导出 ZIP 资源
+               <Download size={14} /> 批量导出 PNG
             </button>
           )}
-          <div className="flex items-center gap-2 text-zinc-700 bg-white/5 px-4 py-2 rounded-lg border border-white/5">
-             <Shield size={14} className="text-emerald-500" />
-             <span className="text-[9px] font-black uppercase tracking-wider">本地安全沙盒模式</span>
+          <div className="px-4 py-2 border border-white/5 bg-white/5 rounded-lg flex items-center gap-2">
+             <ShieldCheck size={14} className="text-emerald-500" />
+             <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">本地处理无上传</span>
           </div>
         </div>
       </header>
@@ -273,15 +270,15 @@ const App: React.FC = () => {
           <div className="flex-1 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_50%_50%,#0c0c0c,transparent)]">
             <div 
               onClick={() => fileInputRef.current?.click()} 
-              className="group w-full max-w-2xl aspect-video border-2 border-dashed border-zinc-900 hover:border-indigo-500/40 bg-[#070707] rounded-[60px] flex flex-col items-center justify-center gap-8 cursor-pointer transition-all duration-700 shadow-2xl relative overflow-hidden group"
+              className="group w-full max-w-xl aspect-[1.6] border-2 border-dashed border-zinc-900 hover:border-indigo-500/30 bg-[#070707] rounded-[60px] flex flex-col items-center justify-center gap-8 cursor-pointer transition-all duration-500 relative overflow-hidden"
             >
-              <div className="absolute inset-0 bg-indigo-600 opacity-0 group-hover:opacity-[0.03] transition-opacity duration-700" />
-              <div className="w-24 h-24 bg-zinc-900 group-hover:bg-indigo-600 rounded-[30px] flex items-center justify-center transition-all group-hover:-rotate-12 shadow-2xl group-hover:shadow-indigo-500/20">
-                <Upload className="text-zinc-600 group-hover:text-white" size={32} />
+              <div className="absolute inset-0 bg-indigo-500 opacity-0 group-hover:opacity-[0.02] transition-opacity" />
+              <div className="w-20 h-20 bg-zinc-900 group-hover:bg-indigo-600 rounded-3xl flex items-center justify-center transition-all group-hover:-rotate-6 shadow-xl">
+                <Upload className="text-zinc-600 group-hover:text-white" size={28} />
               </div>
-              <div className="text-center relative space-y-3">
-                <h2 className="text-3xl font-black italic uppercase tracking-tighter text-zinc-300 group-hover:text-white transition-colors">拖入 PSD 进行本地解析</h2>
-                <p className="text-zinc-700 text-[10px] uppercase tracking-[0.4em] font-black">自动裁剪透明边距 • 保持文件夹结构 • 100% 隐私安全</p>
+              <div className="text-center relative">
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter">拖入本地 PSD</h2>
+                <p className="text-zinc-700 text-[10px] mt-2 uppercase tracking-[0.4em] font-black">自动裁剪透明边距 • 保持分组目录</p>
               </div>
               <input type="file" ref={fileInputRef} onChange={(e) => e.target.files?.[0] && loadPsd(e.target.files[0])} className="hidden" accept=".psd" />
             </div>
@@ -291,7 +288,7 @@ const App: React.FC = () => {
             <aside className="w-80 border-r border-white/5 bg-[#050505] flex flex-col shrink-0">
               <div className="p-6 border-b border-white/5 flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">图层结构浏览</span>
-                <span className="text-[8px] font-mono bg-indigo-500/10 text-indigo-400 px-2 py-1 rounded-md uppercase border border-indigo-500/20">{stats.groups} 组</span>
+                <span className="text-[8px] font-mono bg-zinc-900 text-zinc-500 px-2 py-1 rounded-md uppercase">{stats.groups} 容器</span>
               </div>
               <div className="flex-1 overflow-y-auto p-4 scrollbar-custom">
                 <LayerTree layers={layers} onToggleSelect={toggleSelect} onPreview={handlePreview} />
@@ -301,41 +298,36 @@ const App: React.FC = () => {
             <section className="flex-1 relative bg-[#010101] flex flex-col">
               <div className="flex-1 flex flex-col items-center justify-center p-12 checkerboard-pro">
                 {previewLayer ? (
-                  <div className="relative animate-in zoom-in duration-500 max-w-full max-h-full">
-                    <div className="absolute -inset-20 bg-indigo-500/10 blur-[100px] rounded-full pointer-events-none animate-pulse" />
-                    <div className="bg-[#0d0d0d] border border-white/10 rounded-[40px] overflow-hidden shadow-[0_50px_100px_-20px_rgba(0,0,0,1)] flex flex-col relative z-10 border-indigo-500/10">
+                  <div className="relative animate-in zoom-in duration-500 max-w-full max-h-full p-10">
+                    <div className="absolute inset-0 bg-indigo-500/5 blur-[80px] rounded-full pointer-events-none" />
+                    <div className="bg-[#0d0d0d] border border-white/10 rounded-[40px] overflow-hidden shadow-2xl flex flex-col relative z-10">
                       <div className="px-6 py-4 bg-white/5 flex justify-between items-center border-b border-white/5 text-[9px] font-black uppercase tracking-[0.2em]">
-                        <span className="text-zinc-400 truncate max-w-[240px]">{previewLayer.name}</span>
-                        <div className="flex items-center gap-3">
-                          <span className="text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">{previewLayer.w} × {previewLayer.h} PX</span>
-                        </div>
+                        <span className="text-zinc-400 truncate max-w-[200px]">{previewLayer.name}</span>
+                        <span className="text-indigo-400 bg-indigo-500/10 px-2 py-1 rounded">{previewLayer.w} × {previewLayer.h} PX</span>
                       </div>
-                      <div className="p-16 max-w-[55vw] max-h-[55vh] overflow-auto flex items-center justify-center scrollbar-custom">
-                        <img src={previewLayer.canvas.toDataURL()} className="max-w-full h-auto drop-shadow-[0_20px_40px_rgba(0,0,0,0.5)]" alt="Preview" />
+                      <div className="p-16 max-w-[50vw] max-h-[50vh] overflow-auto flex items-center justify-center scrollbar-custom">
+                        <img src={previewLayer.canvas.toDataURL()} className="max-w-full h-auto drop-shadow-2xl" alt="Preview" />
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center opacity-[0.03] flex flex-col items-center gap-8 pointer-events-none">
-                    <Layers size={140} />
-                    <span className="text-xl font-black uppercase tracking-[0.8em]">PREVIEW</span>
+                  <div className="text-center opacity-[0.03] flex flex-col items-center gap-6">
+                    <Layers size={120} />
+                    <span className="text-sm font-black uppercase tracking-[0.8em]">PREVIEW MODE</span>
                   </div>
                 )}
               </div>
               
-              <div className="h-14 border-t border-white/5 bg-[#0a0a0a]/95 px-10 flex items-center justify-between shrink-0">
+              <div className="h-12 border-t border-white/5 bg-[#0a0a0a]/90 px-8 flex items-center justify-between shrink-0">
                  <div className="flex items-center gap-4">
-                   <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">引擎状态:</span>
-                   <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">{state.message}</span>
-                 </div>
-                 <div className="text-[9px] font-black text-zinc-700 uppercase tracking-widest">
-                   SLICEMASTER CORE ENGINE v2.0
+                   <div className={`w-2 h-2 rounded-full ${state.status === 'idle' ? 'bg-zinc-800' : 'bg-emerald-500 animate-pulse'}`} />
+                   <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">{state.message}</span>
                  </div>
               </div>
             </section>
 
             <aside className="w-80 border-l border-white/5 bg-[#050505] shrink-0 flex flex-col p-8 space-y-12">
-               <div className="space-y-8">
+               <div className="space-y-6">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
                       <Settings size={16} />
@@ -345,23 +337,23 @@ const App: React.FC = () => {
                   
                   <div className="space-y-6 bg-white/2 p-6 rounded-3xl border border-white/5">
                     <div className="space-y-3">
-                       <label className="text-[9px] font-black text-zinc-600 uppercase tracking-wider">命名转换规范</label>
+                       <label className="text-[9px] font-black text-zinc-600 uppercase">命名规范</label>
                        <select 
                         value={namingStyle} 
                         onChange={(e) => setNamingStyle(e.target.value as NamingStyle)} 
-                        className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-[10px] font-black outline-none focus:border-indigo-500/50 transition-all appearance-none cursor-pointer"
+                        className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-[10px] font-black outline-none focus:border-indigo-500/50 transition-all cursor-pointer"
                        >
-                         <option value="original">保持原始 (Original)</option>
-                         <option value="snake_case">小写蛇形 (snake_case)</option>
-                         <option value="kebab-case">小写短横 (kebab-case)</option>
-                         <option value="PascalCase">大写驼峰 (PascalCase)</option>
+                         <option value="original">原始 (Original)</option>
+                         <option value="snake_case">蛇形 (snake_case)</option>
+                         <option value="kebab-case">短横 (kebab-case)</option>
+                         <option value="PascalCase">驼峰 (PascalCase)</option>
                        </select>
                     </div>
 
-                    <div className="flex items-center justify-between pt-2">
-                       <div className="space-y-1">
-                         <label className="text-[9px] font-black text-zinc-600 uppercase tracking-wider">继承路径前缀</label>
-                         <p className="text-[7px] text-zinc-800 font-black uppercase">自动拼接父级文件夹名</p>
+                    <div className="flex items-center justify-between">
+                       <div className="space-y-0.5">
+                         <label className="text-[9px] font-black text-zinc-600 uppercase">保留目录结构</label>
+                         <p className="text-[7px] text-zinc-800 font-black uppercase">自动生成文件夹层级</p>
                        </div>
                        <button 
                         onClick={() => setUseFolderPrefix(!useFolderPrefix)} 
@@ -373,31 +365,27 @@ const App: React.FC = () => {
                   </div>
                </div>
 
-               <div className="space-y-8">
+               <div className="space-y-6">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
                       <BarChart3 size={16} />
                     </div>
-                    <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500">资源统计</h3>
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500">图层统计</h3>
                   </div>
                   <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-3xl p-6 space-y-6">
                      <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
                            <span className="text-[8px] font-black uppercase text-zinc-600 block">图层总数</span>
-                           <span className="text-white text-lg font-black tracking-tighter tabular-nums">{stats.total}</span>
+                           <span className="text-white text-lg font-black tabular-nums">{stats.total}</span>
                         </div>
                         <div className="space-y-1">
-                           <span className="text-[8px] font-black uppercase text-zinc-600 block">待导出</span>
-                           <span className="text-emerald-400 text-lg font-black tracking-tighter tabular-nums">{stats.selected}</span>
+                           <span className="text-[8px] font-black uppercase text-zinc-600 block">待导出项</span>
+                           <span className="text-emerald-400 text-lg font-black tabular-nums">{stats.selected}</span>
                         </div>
                      </div>
-                     <div className="pt-6 border-t border-emerald-500/10">
-                        <div className="flex items-center gap-2 mb-3">
-                           <Cpu size={12} className="text-emerald-500/50" />
-                           <span className="text-[8px] font-black uppercase text-zinc-600">处理策略: 智能边缘修剪</span>
-                        </div>
-                        <p className="text-[8px] text-emerald-900 font-bold leading-relaxed uppercase">
-                          检测到已开启透明通道自动裁剪。预计导出将减少约 40% 的冗余文件空间。
+                     <div className="pt-4 border-t border-emerald-500/10">
+                        <p className="text-[8px] text-emerald-800/80 font-bold leading-relaxed uppercase">
+                          已智能启用透明像素裁剪。导出的 PNG 资源将去除所有四周透明冗余。
                         </p>
                      </div>
                   </div>
@@ -407,9 +395,9 @@ const App: React.FC = () => {
                
                <button 
                 onClick={reset} 
-                className="w-full py-4 rounded-2xl border border-white/5 hover:bg-red-500/5 hover:border-red-500/20 hover:text-red-500 text-[9px] font-black uppercase tracking-[0.2em] text-zinc-700 transition-all duration-300 active:scale-95 flex items-center justify-center gap-2"
+                className="w-full py-4 rounded-2xl border border-white/5 hover:bg-red-500/5 hover:border-red-500/20 hover:text-red-500 text-[9px] font-black uppercase tracking-[0.2em] text-zinc-700 transition-all duration-300 flex items-center justify-center gap-2"
                >
-                  <X size={14} /> 释放工作空间
+                  <X size={14} /> 释放当前 PSD
                </button>
             </aside>
           </>
